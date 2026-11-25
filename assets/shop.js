@@ -41,7 +41,10 @@
   var ERR = { demo: "این نسخه‌ی نمایشی سایت است؛ ثبت سفارش، ورود و پیگیری بعد از راه‌اندازی روی سرور فعال می‌شود.", phone: "شماره‌ی موبایل درست نیست؛ مثل ۰۹۱۲۱۲۳۴۵۶۷.", "too many": "تعداد درخواست‌ها زیاد بود؛ کمی بعد دوباره امتحان کنید.",
     wrong: "موبایل یا رمز درست نیست.", exists: "با این موبایل قبلاً حساب ساخته شده؛ وارد شوید.", "password too short": "رمز دست‌کم ۸ نویسه باشد.",
     "cart empty": "کالاهای سبد دیگر در فروشگاه نیستند.", postcode: "کد پستی ده رقم است.",
-    "name is required": "نام را بنویسید.", "city is required": "شهر را بنویسید.", "address is required": "نشانی را بنویسید." };
+    "name is required": "نام را بنویسید.", "city is required": "شهر را بنویسید.", "address is required": "نشانی را بنویسید.",
+    coupon: "این کد تخفیف معتبر نیست.", "coupon expired": "مهلت این کد تخفیف تمام شده.", "coupon used up": "ظرفیت این کد تخفیف پر شده.",
+    "coupon min": "مبلغ سبد به حداقل خرید این کد نرسیده.", "coupon used": "این کد را قبلاً با همین موبایل استفاده کرده‌اید.",
+    ship: "روش ارسال را انتخاب کنید.", "cannot cancel": "این سفارش وارد مرحله‌ی کار شده؛ برای لغو با کارگاه تماس بگیرید." };
   var errText = function (j) { return ERR[j.error] || "انجام نشد. دوباره امتحان کنید یا تماس بگیرید."; };
 
   function toast(html) {
@@ -263,7 +266,7 @@
   var blank = function () { return { q: "", cat: "", brand: "", avail: "", sale: false, priced: false, min: "", max: "", sort: "new", sp: {} }; };
   var F = blank();
   var OPEN = { cat: true, price: true }, FQ = {};          // which filter groups are open, text typed in a group's search
-  var SORTS = [["new", "جدیدترین"], ["cheap", "ارزان‌ترین"], ["dear", "گران‌ترین"], ["off", "بیشترین تخفیف"]];
+  var SORTS = [["new", "جدیدترین"], ["cheap", "ارزان‌ترین"], ["dear", "گران‌ترین"], ["off", "بیشترین تخفیف"], ["sold", "پرفروش‌ترین"]];
   var specOf = function (p, k) { var r = (p.specs || []).filter(function (x) { return x[0] === k; })[0]; return r ? String(r[1]).trim() : ""; };
   var num = function (s) { var m = toEn(s).match(/[\d.]+/); return m ? parseFloat(m[0]) : NaN; };
   var FACETS = (function () {
@@ -391,15 +394,20 @@
     if (!document.querySelector(".filters-scrim")) { var scr = document.createElement("div"); scr.className = "filters-scrim"; document.body.appendChild(scr); }
     var list = LIST.filter(function (p) { return pass(p, ""); });
     var by = { cheap: function (a, b) { return (unit(a) || 9e15) - (unit(b) || 9e15); }, dear: function (a, b) { return unit(b) - unit(a); },
-      off: function (a, b) { return off(b) - off(a); } }[F.sort];
+      off: function (a, b) { return off(b) - off(a); }, sold: function (a, b) { return (b.sold || 0) - (a.sold || 0); } }[F.sort];
     if (by) list.sort(by);
     document.querySelectorAll("[data-sortv]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-sortv") === F.sort)); });
+    var sb = document.querySelector(".sort-tabs"), sa = sb && sb.querySelector('[aria-pressed="true"]');
+    if (sa) {  // on a phone the row scrolls; keep the chosen order in view
+      var br = sb.getBoundingClientRect(), ar = sa.getBoundingClientRect();
+      if (ar.left < br.left) sb.scrollLeft -= br.left - ar.left + 8; else if (ar.right > br.right) sb.scrollLeft += ar.right - br.right + 8;
+    }
     document.querySelector(".shop-count").textContent = fa(list.length) + " کالا";
     var nf = (F.cat ? 1 : 0) + (F.avail ? 1 : 0) + (F.sale ? 1 : 0) + (F.priced ? 1 : 0) + (F.min || F.max ? 1 : 0) + (F.q ? 1 : 0) +
       Object.keys(F.sp).reduce(function (a, k) { return a + F.sp[k].length; }, 0);
     document.querySelectorAll("[data-fcount]").forEach(function (el) { el.textContent = nf ? fa(nf) : ""; el.hidden = !nf; });
     var ch = document.querySelector("[data-chips]"); ch.innerHTML = chips(); ch.hidden = !ch.innerHTML;
-    var rail = document.querySelector("[data-rail]"); rail.innerHTML = railHtml(); rail.hidden = !rail.innerHTML;
+    var rail = document.querySelector("[data-rail]"); rail.innerHTML = railHtml(); rail.hidden = !rail.innerHTML; if (rail.parentNode.classList.contains("rail-box")) { rail.scrollLeft = 0; railUpd(rail); }
     var h1 = document.getElementById("pg-t"); if (h1) h1.textContent = F.cat ? catName(F.cat) : SHOP.title;
     document.querySelector('[data-slot="shop"]').innerHTML = list.length ? list.map(card).join("") :
       '<div class="empty">' + icon("search") + "<p>با این فیلترها کالایی پیدا نشد.</p><button type=\"button\" class=\"btn btn-sm\" data-unf=\"all\">حذف فیلترها</button>" +
@@ -508,81 +516,238 @@
   }
 
   // ---------------------------------------------------------------- cart and checkout
+  // Two steps on /cart/: the basket, then #checkout (contact, shipping method, address, discount code).
+  // Prices shown here are a preview; the server prices the order again from the database.
+  var SHIPS = (window.MICRON_CATALOG && window.MICRON_CATALOG.shipping) ||
+    (SHOP.shipping || []).map(function (n, i) { return { id: "s" + i, name: n, desc: "", mode: "quote", price: 0, freeOver: 0, address: true }; });
+  var CP = null;  // the discount code the server accepted: {code, kind, value, max, min}
+  try { CP = JSON.parse(sessionStorage.getItem("micron-coupon")) || null; } catch (_) {}
+  var saveCP = function () { try { if (CP) sessionStorage.setItem("micron-coupon", JSON.stringify(CP)); else sessionStorage.removeItem("micron-coupon"); } catch (_) {} };
+  var shipSel = "";
+  var T = " تومان";
+
+  function basket() {
+    var lines = store("cart").filter(function (x) { return BY[x.id]; }), t = { lines: lines, list: 0, sub: 0, ask: 0, n: 0 };
+    lines.forEach(function (x) {
+      var p = BY[x.id], u = unit(p); t.n += x.qty;
+      if (!u) { t.ask++; return; }
+      t.sub += u * x.qty; t.list += (p.price || u) * x.qty;
+    });
+    t.save = t.list - t.sub;
+    t.off = 0; t.cpBad = "";
+    if (CP) {
+      if (CP.min && t.sub < CP.min) t.cpBad = "حداقل خرید برای این کد " + money(CP.min) + T + " است.";
+      else if (CP.kind === "pct") t.off = Math.min(Math.floor(t.sub * CP.value / 100), CP.max || Infinity);
+      else if (CP.kind === "amt") t.off = Math.min(CP.value, t.sub);
+    }
+    return t;
+  }
+  // Shipping cost of one method for this basket: a number (0 = free), or null when it is not paid here.
+  function shipCost(m, t) {
+    if (!m || m.mode !== "fixed") return null;
+    if ((CP && !t.cpBad && CP.kind === "ship") || (m.freeOver && t.sub - t.off >= m.freeOver)) return 0;
+    return m.price;
+  }
+  var shipLabel = function (m, t) {
+    var c = shipCost(m, t);
+    return c === null ? (m.mode === "cod" ? "پس‌کرایه (هنگام تحویل)" : "در پیش‌فاکتور") : c ? money(c) + T : "رایگان";
+  };
+  var stepsBar = function (n) {
+    return '<ol class="co-steps" aria-label="مراحل خرید">' + ["سبد خرید", "ارسال و پرداخت", "ثبت سفارش"].map(function (s, i) {
+      return '<li class="' + (i + 1 < n ? "done" : i + 1 === n ? "on" : "") + '"' + (i + 1 === n ? ' aria-current="step"' : "") + "><span>" + (i + 1 < n ? icon("check") : fa(i + 1)) + "</span>" + s + "</li>";
+    }).join("") + "</ol>";
+  };
+  function couponBox() {
+    return '<div class="cp-box">' + (CP ? '<div class="cp-on">' + icon("tag") + '<div><b dir="ltr">' + esc(CP.code) + "</b><small>" +
+      (CP.kind === "pct" ? fa(CP.value) + "٪ تخفیف" + (CP.max ? " تا سقف " + money(CP.max) + T : "") : CP.kind === "amt" ? money(CP.value) + T + " تخفیف" : "ارسال رایگان") +
+      '</small></div><button type="button" class="icon-btn" data-cp-rm aria-label="حذف کد تخفیف">' + icon("x") + "</button></div>" :
+      '<details class="cp-add"><summary>' + icon("tag") + "کد تخفیف دارید؟</summary>" +
+      '<div class="cp-row"><input data-cp-in dir="ltr" maxlength="20" placeholder="کد تخفیف" aria-label="کد تخفیف" autocomplete="off"><button type="button" class="btn btn-ghost btn-sm" data-cp-go>اعمال</button></div></details>') +
+      '<p class="cp-msg" role="status" aria-live="polite"></p></div>';
+  }
+  function sumHtml(t, m, step) {
+    var row = function (a, b, cls) { return '<p class="sum-row' + (cls ? " " + cls : "") + '"><span>' + a + "</span><span>" + b + "</span></p>"; };
+    var cost = step === 2 ? shipCost(m, t) : null;
+    var pay = t.sub - t.off + (cost || 0);
+    return row("قیمت کالاها (" + fa(t.n) + ")", t.list ? money(t.list) + T : "—") +
+      (t.save ? row("سود شما از تخفیف کالاها", "−" + money(t.save) + T, "good") : "") +
+      (CP ? (t.cpBad ? row("کد تخفیف", '<span class="warn">' + esc(t.cpBad) + "</span>", "muted") :
+        CP.kind !== "ship" ? row('کد تخفیف <b dir="ltr">' + esc(CP.code) + "</b>", "−" + money(t.off) + T, "good") : "") : "") +
+      row("هزینه‌ی ارسال", step === 2 && m ? shipLabel(m, t) : "در مرحله‌ی بعد", "muted") +
+      (t.ask ? row("کالاهای استعلامی", fa(t.ask) + " قلم، قیمت در پیش‌فاکتور", "muted") : "") +
+      '<p class="sum-row sum-total"><span>' + (t.ask ? "مبلغ قیمت‌دار" : "مبلغ قابل پرداخت") + "</span><b>" + (pay ? money(pay) + T : "—") + "</b></p>";
+  }
+  function freeHint(t) {
+    var m = SHIPS.filter(function (x) { return x.mode === "fixed" && x.price && x.freeOver; }).sort(function (a, b) { return a.freeOver - b.freeOver; })[0];
+    if (!m || !t.sub) return "";
+    var left = m.freeOver - (t.sub - t.off);
+    return '<div class="free-hint">' + icon("truck") + "<div><p>" + (left > 0 ? "با " + money(left) + T + " خرید بیشتر، «" + esc(m.name) + "» رایگان می‌شود." :
+      "ارسال «" + esc(m.name) + "» برای این سبد رایگان است.") + '</p><span class="bar"><i style="width:' + Math.min(100, Math.round((t.sub - t.off) / m.freeOver * 100)) + '%"></i></span></div></div>';
+  }
+
   function cart() {
     var slot = document.querySelector('[data-slot="cart"]');
-    var lines = store("cart").filter(function (x) { return BY[x.id]; });
-    if (!lines.length) {
+    var t = basket();
+    if (!t.lines.length) {
+      if (slot.querySelector(".done-box")) return;  // the order was just placed; the thank-you stays
       slot.innerHTML = '<div class="empty">' + icon("cart") + "<p>" + esc(SHOP.empty) + '</p><a class="btn" href="/micron-demo/shop/">رفتن به فروشگاه</a></div>';
       return;
     }
-    var total = 0, ask = 0;
-    var rows = lines.map(function (x) {
-      var p = BY[x.id], u = unit(p); total += u * x.qty; if (!u) ask++;
+    if (location.hash === "#checkout") return checkoutStep(slot, t);
+    var rows = t.lines.map(function (x) {
+      var p = BY[x.id], u = unit(p);
       return '<li class="cline"><a class="cl-img" href="' + link(p) + '">' + pic(p) + '</a><div class="cl-info"><a href="' + link(p) + '"><b>' + esc(p.title) + "</b></a>" +
-        "<small>" + esc(catName(p.cat)) + (p.sku ? ' · <span dir="ltr">' + esc(p.sku) + "</span>" : "") + "</small>" + priceHtml(p) + "</div>" +
-        '<div class="qty" role="group" aria-label="تعداد"><button type="button" class="icon-btn" data-step="1" data-line="' + esc(p.id) + '" aria-label="بیشتر">+</button><span>' + fa(x.qty) +
-        '</span><button type="button" class="icon-btn" data-step="-1" data-line="' + esc(p.id) + '" aria-label="کمتر">−</button></div>' +
-        '<button type="button" class="icon-btn rm" data-rmline="' + esc(p.id) + '" aria-label="حذف">' + icon("x") + "</button></li>";
+        "<small>" + esc(catName(p.cat)) + (p.sku ? ' · <span dir="ltr">' + esc(p.sku) + "</span>" : "") + "</small>" + availHtml(p) +
+        '<div class="cl-acts"><button type="button" class="link-btn" data-later="' + esc(p.id) + '">' + icon("heart") + "انتقال به علاقه‌مندی‌ها</button>" +
+        '<button type="button" class="link-btn danger" data-rmline="' + esc(p.id) + '">' + icon("x") + "حذف</button></div></div>" +
+        '<div class="cl-end"><div class="qty" role="group" aria-label="تعداد"><button type="button" class="icon-btn" data-step="1" data-line="' + esc(p.id) + '" aria-label="بیشتر">+</button><span>' + fa(x.qty) +
+        '</span><button type="button" class="icon-btn" data-step="-1" data-line="' + esc(p.id) + '" aria-label="کمتر"' + (x.qty < 2 ? " disabled" : "") + ">−</button></div>" +
+        '<div class="cl-price">' + (u ? (off(p) ? "<s>" + money(p.price * x.qty) + "</s>" : "") + "<b>" + money(u * x.qty) + "<small>" + T + "</small></b>" +
+          (x.qty > 1 ? "<small>هر عدد " + money(u) + "</small>" : "") : '<b class="ask">استعلام قیمت</b>') + "</div></div></li>";
     }).join("");
-    var ship = (SHOP.shipping || []).map(function (o) { return "<option>" + esc(o) + "</option>"; }).join("");
-    slot.innerHTML = '<div class="cart-grid"><div><ul class="clist">' + rows + "</ul></div>" +
-      '<aside class="sum"><div class="sum-box"><p class="sum-row"><span>جمع کالاهای قیمت‌دار</span><b>' + (total ? money(total) + " تومان" : "—") + "</b></p>" +
-      (ask ? '<p class="sum-row"><span>اقلام استعلامی</span><b>' + fa(ask) + " قلم</b></p>" : "") +
-      '<p class="sum-row muted"><span>هزینه‌ی ارسال</span><span>در پیش‌فاکتور</span></p>' +
-      '<p class="note">' + esc(SHOP.payNote) + "</p></div>" +
-      '<form class="form" id="checkout" novalidate><h2>مشخصات تحویل</h2><div class="fgrid">' +
+    slot.innerHTML = stepsBar(1) + '<div class="cart-grid"><div><div class="cart-head"><h2>سبد خرید شما <small>' + fa(t.n) + " کالا</small></h2>" +
+      '<button type="button" class="link-btn danger" data-clearcart>' + icon("x") + "خالی کردن سبد</button></div>" +
+      '<ul class="clist">' + rows + "</ul>" + freeHint(t) + "</div>" +
+      '<aside class="sum"><div class="sum-box"><div data-sum>' + sumHtml(t, null, 1) + "</div>" + couponBox() +
+      '<a class="btn btn-block" href="#checkout">ادامه و انتخاب روش ارسال' + icon("arrow") + "</a>" +
+      (t.ask ? '<p class="note">' + esc(SHOP.askNote) + "</p>" : "") + "</div></aside></div>" +
+      '<div class="buybar cart-bar"><div><small>' + (t.ask ? "مبلغ قیمت‌دار" : "مبلغ قابل پرداخت") + "</small><b>" + (t.sub - t.off ? money(t.sub - t.off) + T : "—") + '</b></div><a class="btn" href="#checkout">ادامه</a></div>';
+  }
+
+  function checkoutStep(slot, t) {
+    var on = SHIPS.filter(function (m) { return m.id === shipSel; })[0] || SHIPS[0];
+    shipSel = on ? on.id : "";
+    var ships = SHIPS.map(function (m) {
+      return '<label class="ship-opt"><input type="radio" name="ship" value="' + esc(m.id) + '"' + (m.id === shipSel ? " checked" : "") + '><span class="ship-in"><b>' + esc(m.name) + "</b>" +
+        (m.desc ? "<small>" + esc(m.desc) + "</small>" : "") + '</span><span class="ship-cost" data-shipcost="' + esc(m.id) + '">' + esc(shipLabel(m, t)) + "</span></label>";
+    }).join("");
+    var mini = t.lines.slice(0, 6).map(function (x) { return '<span class="mini">' + pic(BY[x.id]) + (x.qty > 1 ? "<i>" + fa(x.qty) + "</i>" : "") + "</span>"; }).join("");
+    slot.innerHTML = stepsBar(2) + '<form id="checkout" class="cart-grid" novalidate><div class="co-main">' +
+      '<section class="co-card"><h2><span>۱</span>مشخصات گیرنده</h2><div class="fgrid">' +
       '<label class="f"><span>نام و نام خانوادگی</span><input name="name" required maxlength="60" autocomplete="name"></label>' +
       '<label class="f"><span>موبایل</span><input name="phone" required inputmode="tel" dir="ltr" maxlength="14" placeholder="09xxxxxxxxx" autocomplete="tel"></label>' +
-      '<label class="f"><span>شهر</span><input name="city" required maxlength="40" autocomplete="address-level2"></label>' +
+      '<label class="f f-wide"><span>شرکت یا کارگاه (اختیاری)</span><input name="company" maxlength="80" autocomplete="organization"></label></div></section>' +
+      '<section class="co-card"><h2><span>۲</span>روش ارسال</h2><div class="ship-list">' + ships + "</div></section>" +
+      '<section class="co-card" data-addr><h2><span>۳</span>نشانی تحویل</h2><div class="fgrid">' +
+      '<label class="f"><span>شهر</span><input name="city" maxlength="40" autocomplete="address-level2"></label>' +
       '<label class="f"><span>کد پستی (اختیاری)</span><input name="postcode" inputmode="numeric" dir="ltr" maxlength="12" autocomplete="postal-code"></label>' +
-      '<label class="f f-wide"><span>نشانی</span><textarea name="address" required rows="2" maxlength="300" autocomplete="street-address"></textarea></label>' +
-      '<label class="f"><span>روش ارسال</span><select name="ship">' + ship + "</select></label>" +
-      '<label class="f"><span>شرکت یا کارگاه</span><input name="company" maxlength="80" autocomplete="organization"></label>' +
-      '<label class="f f-wide"><span>توضیح</span><textarea name="note" rows="2" maxlength="1000" placeholder="اندازه، جنس قطعه‌کار یا هر نکته‌ی دیگر"></textarea></label>' +
-      '<label class="hp" aria-hidden="true">website<input name="website" tabindex="-1" autocomplete="off"></label></div>' +
-      '<p class="form-msg" role="status" aria-live="polite"></p><button class="btn btn-block" type="submit">ثبت سفارش و دریافت پیش‌فاکتور</button></form></aside></div>';
+      '<label class="f f-wide"><span>نشانی کامل</span><textarea name="address" rows="2" maxlength="300" autocomplete="street-address" placeholder="خیابان، کوچه، پلاک، واحد"></textarea></label></div></section>' +
+      '<section class="co-card"><h2><span data-noteno>۴</span>توضیح سفارش (اختیاری)</h2><label class="f"><span class="sr-only">توضیح</span><textarea name="note" rows="2" maxlength="1000" placeholder="اندازه، جنس قطعه‌کار، زمان تحویل یا هر نکته‌ی دیگر"></textarea></label>' +
+      '<label class="hp" aria-hidden="true">website<input name="website" tabindex="-1" autocomplete="off"></label></section></div>' +
+      '<aside class="sum"><div class="sum-box"><div class="mini-row">' + mini + '<a href="#" class="link-btn">ویرایش سبد</a></div><div data-sum>' + sumHtml(t, on, 2) + "</div>" + couponBox() +
+      '<div class="pay-box">' + icon("wallet") + "<div><b>پرداخت پس از پیش‌فاکتور</b><small>" + esc(SHOP.payNote) + "</small></div></div>" +
+      '<p class="form-msg" role="status" aria-live="polite"></p><button class="btn btn-block" type="submit">ثبت سفارش</button>' +
+      '<p class="note fine">با ثبت سفارش، پیش‌فاکتور برای شما آماده می‌شود و تا تأیید شما چیزی پرداخت نمی‌شود.</p></div></aside></form>' +
+      '<div class="buybar cart-bar"><div><small>مبلغ قابل پرداخت</small><b data-paybar></b></div><button class="btn" type="submit" form="checkout">ثبت سفارش</button></div>';
+    var f = document.getElementById("checkout");
+    addrShown(f);
+    payBar(t, on);
     api("GET", "account/me").then(function (me) {
-      if (me._status !== 200) return;
-      var f = document.getElementById("checkout"); if (!f) return;
+      if (me._status !== 200) {
+        f.querySelector(".co-main").insertAdjacentHTML("afterbegin", '<p class="co-login">' + icon("user") + 'حساب دارید؟ <a href="/micron-demo/account/?next=checkout">وارد شوید</a> تا مشخصات خودکار پر شود و سفارش‌ها را در حسابتان ببینید.</p>');
+        return;
+      }
       [["name", me.name], ["phone", me.phone], ["city", me.city], ["address", me.address], ["postcode", me.postcode], ["company", me.company]].forEach(function (x) {
         if (x[1] && !f.elements[x[0]].value) f.elements[x[0]].value = x[1];
       });
     });
   }
+  function addrShown(f) {
+    var m = SHIPS.filter(function (x) { return x.id === shipSel; })[0], need = !m || m.address !== false;
+    f.querySelector("[data-addr]").hidden = !need;
+    f.querySelector("[data-noteno]").textContent = need ? "۴" : "۳";
+  }
+  function payBar(t, m) {
+    var b = document.querySelector("[data-paybar]"); if (!b) return;
+    var pay = t.sub - t.off + (shipCost(m, t) || 0); b.textContent = pay ? money(pay) + T : "—";
+  }
+  function refreshSum() {
+    var t = basket(), m = SHIPS.filter(function (x) { return x.id === shipSel; })[0], step = location.hash === "#checkout" ? 2 : 1;
+    var box = document.querySelector("[data-sum]"); if (box) box.innerHTML = sumHtml(t, m, step);
+    SHIPS.forEach(function (x) { var el = document.querySelector('[data-shipcost="' + x.id + '"]'); if (el) el.textContent = shipLabel(x, t); });
+    var cb = document.querySelector(".cp-box"); if (cb) cb.outerHTML = couponBox();
+    payBar(t, m);
+  }
+  document.addEventListener("change", function (e) {
+    if (e.target.name === "ship" && e.target.form && e.target.form.id === "checkout") { shipSel = e.target.value; addrShown(e.target.form); refreshSum(); }
+  });
+  function applyCoupon() {
+    var inp = document.querySelector("[data-cp-in]"), msg = document.querySelector(".cp-msg"), code = toEn(inp.value).trim();
+    if (!code) { msg.textContent = "کد را بنویسید."; return inp.focus(); }
+    msg.className = "cp-msg"; msg.textContent = "در حال بررسی…";
+    api("POST", "coupon", { code: code, items: store("cart") }).then(function (j) {
+      if (j._status !== 200) { msg.className = "cp-msg bad"; msg.textContent = errText(j); return; }
+      CP = j.coupon; saveCP(); refreshSum();
+      var m = document.querySelector(".cp-msg"); if (m) { m.className = "cp-msg ok"; m.textContent = "کد تخفیف اعمال شد."; }
+    }, function () { msg.className = "cp-msg bad"; msg.textContent = "ارتباط برقرار نشد."; });
+  }
+  document.addEventListener("click", function (e) {
+    var t;
+    if (e.target.closest("[data-cp-go]")) applyCoupon();
+    else if (e.target.closest("[data-cp-rm]")) { CP = null; saveCP(); refreshSum(); }
+    else if ((t = e.target.closest("[data-later]"))) {
+      var id = t.getAttribute("data-later"), w = store("wish");
+      if (w.indexOf(id) < 0) { w.push(id); store("wish", w); }
+      store("cart", store("cart").filter(function (x) { return x.id !== id; })); toast("به علاقه‌مندی‌ها منتقل شد."); draw();
+    } else if (e.target.closest("[data-clearcart]")) {
+      if (confirm("همه‌ی کالاها از سبد حذف شوند؟")) { store("cart", []); draw(); }
+    }
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Enter" && e.target.matches("[data-cp-in]")) { e.preventDefault(); applyCoupon(); } });
+  addEventListener("hashchange", function () { if (page === "cart" || page === "account") { draw(); scrollTo(0, 0); } });
+
   document.addEventListener("submit", function (e) {
     var f = e.target;
     if (f.id === "checkout") {
       e.preventDefault();
-      var msg = f.querySelector(".form-msg"), btn = f.querySelector("[type=submit]"), v = function (n) { return f.elements[n].value.trim(); };
+      var msg = f.querySelector(".form-msg"), btns = document.querySelectorAll('[type=submit][form=checkout], #checkout [type=submit]'), v = function (n) { return f.elements[n].value.trim(); };
+      var m = SHIPS.filter(function (x) { return x.id === shipSel; })[0], need = !m || m.address !== false;
       msg.className = "form-msg"; msg.textContent = "";
-      if (!v("name")) { msg.textContent = "نام را بنویسید."; return f.elements.name.focus(); }
-      if (!/^09\d{9}$/.test(toEn(v("phone")).replace(/\D/g, "").replace(/^98/, "0"))) { msg.textContent = ERR.phone; return f.elements.phone.focus(); }
-      if (!v("city")) { msg.textContent = "شهر را بنویسید."; return f.elements.city.focus(); }
-      if (!v("address")) { msg.textContent = "نشانی را بنویسید."; return f.elements.address.focus(); }
-      btn.disabled = true; msg.className = "form-msg ok"; msg.textContent = "در حال ثبت…";
-      api("POST", "checkout", { items: store("cart"), name: v("name"), phone: v("phone"), city: v("city"), postcode: v("postcode"), address: v("address"),
-        ship: v("ship"), company: v("company"), note: v("note"), website: v("website") }).then(function (j) {
-        btn.disabled = false;
-        if (j._status !== 200) { msg.className = "form-msg"; msg.textContent = errText(j); return; }
-        store("cart", []);
+      var bad = function (n, text) { msg.textContent = text; f.elements[n].focus(); f.elements[n].classList.add("bad"); };
+      f.querySelectorAll(".bad").forEach(function (x) { x.classList.remove("bad"); });
+      if (!v("name")) return bad("name", "نام گیرنده را بنویسید.");
+      if (!/^09\d{9}$/.test(toEn(v("phone")).replace(/\D/g, "").replace(/^98/, "0"))) return bad("phone", ERR.phone);
+      if (!m) { msg.textContent = ERR.ship; return; }
+      if (need && !v("city")) return bad("city", "شهر را بنویسید.");
+      if (need && !v("address")) return bad("address", "نشانی را بنویسید.");
+      if (need && v("postcode") && toEn(v("postcode")).replace(/\D/g, "").length !== 10) return bad("postcode", ERR.postcode);
+      btns.forEach(function (b) { b.disabled = true; }); msg.className = "form-msg ok"; msg.textContent = "در حال ثبت…";
+      var t = basket();
+      api("POST", "checkout", { items: store("cart"), name: v("name"), phone: v("phone"), company: v("company"), ship: shipSel,
+        city: need ? v("city") : "", postcode: need ? v("postcode") : "", address: need ? v("address") : "", note: v("note"),
+        coupon: CP && !t.cpBad ? CP.code : "", website: v("website") }).then(function (j) {
+        btns.forEach(function (b) { b.disabled = false; });
+        if (j._status !== 200) {
+          msg.className = "form-msg"; msg.textContent = errText(j);
+          if (/^coupon/.test(j.error || "")) { CP = null; saveCP(); refreshSum(); var mm = f.querySelector(".form-msg"); if (mm) mm.textContent = errText(j); }
+          return;
+        }
+        store("cart", []); CP = null; saveCP();
         try { localStorage.setItem("micron-last-code", j.code); } catch (_) {}
-        document.querySelector('[data-slot="cart"]').innerHTML = '<div class="done-box"><div class="done-ic">' + icon("cart") + "</div><h2>سفارش ثبت شد</h2>" +
-          '<p>کد پیگیری: <b class="code" dir="ltr">' + fa(j.code) + "</b></p><p class=\"note\">" + esc(SHOP.payNote) + "</p>" +
-          '<div class="hero-cta"><a class="btn" href="/micron-demo/track/">پیگیری سفارش</a><a class="btn btn-ghost" href="/micron-demo/shop/">ادامه‌ی خرید</a></div></div>';
+        history.replaceState(null, "", location.pathname);
+        var shipTxt = j.shipMode === "fixed" ? (j.shipCost ? "هزینه‌ی ارسال " + money(j.shipCost) + T + " در این مبلغ است." : "ارسال رایگان است.") :
+          j.shipMode === "cod" ? "هزینه‌ی ارسال را هنگام تحویل می‌پردازید." : "هزینه‌ی ارسال در پیش‌فاکتور می‌آید.";
+        document.querySelector('[data-slot="cart"]').innerHTML = stepsBar(3) + '<div class="done-box"><div class="done-ic">' + icon("check") + "</div><h2>سفارش شما ثبت شد</h2>" +
+          '<p>کد پیگیری: <b class="code" dir="ltr">' + fa(j.code) + "</b></p>" +
+          (j.total ? "<p>مبلغ " + (j.ask ? "قیمت‌دار " : "") + "سفارش: <b>" + money(j.total) + T + "</b><br><small>" + shipTxt + "</small></p>" : "") +
+          '<p class="note">' + esc(SHOP.payNote) + "</p>" +
+          '<div class="hero-cta">' + (j.account ? '<a class="btn" href="/micron-demo/account/#order-' + esc(j.code) + '">مشاهده در حساب کاربری</a>' : '<a class="btn" href="/micron-demo/track/">پیگیری سفارش</a>') +
+          '<a class="btn btn-ghost" href="/micron-demo/shop/">ادامه‌ی خرید</a></div></div>';
         scrollTo({ top: 0, behavior: "smooth" });
-      }, function () { btn.disabled = false; msg.className = "form-msg"; msg.textContent = "ارتباط برقرار نشد. اینترنت را بررسی کنید."; });
+      }, function () { btns.forEach(function (b) { b.disabled = false; }); msg.className = "form-msg"; msg.textContent = "ارتباط برقرار نشد. اینترنت را بررسی کنید."; });
     } else if (f.id === "acc-login" || f.id === "acc-reg" || f.id === "acc-edit") {
       e.preventDefault();
-      var m = f.querySelector(".form-msg"), b = f.querySelector("[type=submit]"), data = {};
+      var mm = f.querySelector(".form-msg"), b = f.querySelector("[type=submit]"), data = {};
       Array.prototype.forEach.call(f.elements, function (el) { if (el.name) data[el.name] = el.value.trim(); });
       var path = f.id === "acc-login" ? "account/login" : f.id === "acc-reg" ? "account/register" : "account/me";
-      b.disabled = true; m.className = "form-msg"; m.textContent = "";
+      b.disabled = true; mm.className = "form-msg"; mm.textContent = "";
       api(f.id === "acc-edit" ? "PATCH" : "POST", path, data).then(function (j) {
         b.disabled = false;
-        if (j._status !== 200) { m.textContent = errText(j); return; }
-        if (f.id === "acc-edit") { m.className = "form-msg ok"; m.textContent = "ذخیره شد."; f.elements.old.value = ""; f.elements["new"].value = ""; }
+        if (j._status !== 200) { mm.textContent = errText(j); return; }
+        if (f.id === "acc-edit") { mm.className = "form-msg ok"; mm.textContent = "ذخیره شد."; f.elements.old.value = ""; f.elements["new"].value = ""; }
+        else if (/[?&]next=checkout/.test(location.search)) location.href = "/micron-demo/cart/#checkout";
         else draw();
-      }, function () { b.disabled = false; m.textContent = "ارتباط برقرار نشد."; });
+      }, function () { b.disabled = false; mm.textContent = "ارتباط برقرار نشد."; });
     }
   });
 
@@ -611,12 +776,107 @@
       '<div class="empty">' + icon("heart") + '<p>فهرست علاقه‌مندی‌ها خالی است.</p><a class="btn" href="/micron-demo/shop/">رفتن به فروشگاه</a></div>';
   }
 
-  // ---------------------------------------------------------------- account
+  // ---------------------------------------------------------------- account panel
+  // Routes in the hash: #dashboard (default), #orders, #orders-<filter>, #order-<id>, #profile.
+  var FLOW = ["new", "review", "quoted", "making", "ready", "delivered"];
+  var OPEN = ["new", "review", "quoted", "making", "ready"];
+  var faDate = function (s, time) {
+    var d = new Date(s); if (isNaN(d)) return "";
+    return d.toLocaleDateString("fa-IR", { year: "numeric", month: "long", day: "numeric" }) + (time ? "، " + d.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" }) : "");
+  };
+  var stName = function (s) { return ((C.track && C.track.statuses) || {})[s] || s; };
+  var stHtml = function (s) { return '<span class="st st-' + esc(s) + '">' + esc(stName(s)) + "</span>"; };
+  var ME = null;
+  function orderCard(o) {
+    var items = o.items || [], thumbs = items.slice(0, 4).map(function (x) {
+      var p = BY[x.id] || { title: x.title, images: x.image ? [x.image] : [] };
+      return '<span class="mini">' + pic(p) + (x.qty > 1 ? "<i>" + fa(x.qty) + "</i>" : "") + "</span>";
+    }).join("") + (items.length > 4 ? '<span class="mini more">+' + fa(items.length - 4) + "</span>" : "");
+    var what = items.length ? fa(items.reduce(function (a, x) { return a + x.qty; }, 0)) + " کالا" : esc(o.tool || "سفارش ساخت یا تیزکاری");
+    return '<li class="ocard"><a href="#order-' + esc(o.id) + '"><div class="oc-top"><b>سفارش <span dir="ltr">' + fa(o.id) + "</span></b>" + stHtml(o.status) + "</div>" +
+      '<div class="oc-mid">' + (thumbs ? '<div class="mini-row">' + thumbs + "</div>" : '<span class="oc-tool">' + icon("box") + "</span>") +
+      "<p>" + what + (o.ship ? "<small>" + esc(o.ship) + "</small>" : "") + "</p></div>" +
+      '<div class="oc-bot"><small>' + faDate(o.at) + "</small><span>" + (o.total ? "<b>" + money(o.total) + "</b> تومان" : '<span class="muted">در پیش‌فاکتور</span>') +
+      "</span>" + icon("arrow") + "</div>" + (o.public ? '<p class="msg-box">' + icon("bell") + esc(o.public) + "</p>" : "") + "</a></li>";
+  }
+  function accDash(slot, me) {
+    var os = me.orders || [], cur = os.filter(function (o) { return OPEN.indexOf(o.status) >= 0; });
+    var spent = os.filter(function (o) { return o.status === "delivered"; }).reduce(function (a, o) { return a + (o.total || 0); }, 0);
+    var stat = function (n, label, href, ic) { return '<a class="stat-card" href="' + href + '">' + icon(ic) + "<b>" + n + "</b><span>" + label + "</span></a>"; };
+    slot.innerHTML = '<h2 class="acc-h">سلام ' + esc(me.name.split(" ")[0]) + "</h2>" +
+      '<div class="stat-row">' + stat(fa(cur.length), "سفارش جاری", "#orders-open", "box") +
+      stat(fa(os.filter(function (o) { return o.status === "delivered"; }).length), "تحویل‌شده", "#orders-done", "check") +
+      stat(spent ? money(spent) : "۰", "تومان خرید تحویل‌شده", "#orders", "wallet") + "</div>" +
+      (cur.length ? '<h3 class="acc-sub">سفارش‌های جاری</h3><ul class="olist">' + cur.slice(0, 3).map(orderCard).join("") + "</ul>" :
+        os.length ? '<h3 class="acc-sub">آخرین سفارش</h3><ul class="olist">' + orderCard(os[0]) + "</ul>" :
+          '<div class="empty">' + icon("cart") + '<p>هنوز سفارشی با این حساب ثبت نشده.</p><a class="btn" href="/micron-demo/shop/">رفتن به فروشگاه</a></div>') +
+      (os.length > 3 || (cur.length && os.length > cur.length) ? '<a class="more-link" href="#orders">همه‌ی سفارش‌ها' + icon("arrow") + "</a>" : "");
+  }
+  function accOrders(slot, me, f) {
+    var os = me.orders || [];
+    var groups = [["all", "همه", function () { return true; }], ["open", "جاری", function (o) { return OPEN.indexOf(o.status) >= 0; }],
+      ["done", "تحویل‌شده", function (o) { return o.status === "delivered"; }], ["cancel", "لغوشده", function (o) { return o.status === "cancelled"; }]];
+    var g = groups.filter(function (x) { return x[0] === f; })[0] || groups[0], list = os.filter(g[2]);
+    slot.innerHTML = '<h2 class="acc-h">سفارش‌های من</h2><div class="sort-tabs" role="tablist">' + groups.map(function (x) {
+      return '<a role="tab" href="#orders' + (x[0] === "all" ? "" : "-" + x[0]) + '" aria-selected="' + (x === g) + '">' + x[1] + " <small>" + fa(os.filter(x[2]).length) + "</small></a>";
+    }).join("") + "</div>" + (list.length ? '<ul class="olist">' + list.map(orderCard).join("") + "</ul>" :
+      '<div class="empty">' + icon("box") + "<p>" + (os.length ? "سفارشی در این دسته نیست." : "هنوز سفارشی با این حساب ثبت نشده.") + '</p><a class="btn" href="/micron-demo/shop/">رفتن به فروشگاه</a></div>');
+  }
+  function accOrder(slot, id) {
+    slot.innerHTML = '<p class="loading">در حال بارگذاری…</p>';
+    api("GET", "account/orders/" + encodeURIComponent(id)).then(function (o) {
+      if (o._status !== 200) { slot.innerHTML = '<div class="empty">' + icon("box") + '<p>این سفارش پیدا نشد.</p><a class="btn" href="#orders">سفارش‌های من</a></div>'; return; }
+      var at = {}; (o.log || []).forEach(function (x) { if (!at[x.status]) at[x.status] = x.at; });
+      var reach = FLOW.indexOf(o.status), row = function (a, b, cls) { return '<p class="sum-row' + (cls ? " " + cls : "") + '"><span>' + a + "</span><span>" + b + "</span></p>"; };
+      var steps = o.status === "cancelled" ? '<div class="msg-box bad">' + icon("x") + "این سفارش در " + faDate(at.cancelled || o.at) + " لغو شد.</div>" :
+        '<ol class="o-flow">' + FLOW.map(function (s, i) {
+          return '<li class="' + (i < reach ? "done" : i === reach ? "on" : "") + '"><span>' + (i < reach ? icon("check") : fa(i + 1)) + "</span><b>" + esc(stName(s)) + "</b>" +
+            (at[s] ? "<small>" + faDate(at[s]) + "</small>" : "") + "</li>";
+        }).join("") + "</ol>";
+      var items = (o.items || []).length ? '<ul class="clist oitems">' + o.items.map(function (x) {
+        var p = BY[x.id] || { title: x.title, slug: x.slug, images: x.image ? [x.image] : [] };
+        return '<li class="cline"><' + (BY[x.id] ? 'a href="' + link(p) + '"' : "span") + ' class="cl-img">' + pic(p) + "</" + (BY[x.id] ? "a" : "span") + '><div class="cl-info"><b>' + esc(x.title) + "</b>" +
+          (x.sku ? '<small dir="ltr">' + esc(x.sku) + "</small>" : "") + "<small>" + fa(x.qty) + " عدد" + (x.unit ? " × " + money(x.unit) + T : "") + "</small></div>" +
+          '<div class="cl-price">' + (x.unit ? "<b>" + money(x.sum) + "<small>" + T + "</small></b>" : '<b class="ask">استعلام</b>') + "</div></li>";
+      }).join("") + "</ul>" :
+        '<dl class="o-spec">' + [["ابزار", o.tool], ["تعداد", o.qty ? fa(o.qty) : ""], ["جنس قطعه‌کار", o.material], ["توضیح", o.desc], ["فایل‌ها", o.files ? fa(o.files) + " فایل" : ""]]
+          .filter(function (x) { return x[1]; }).map(function (x) { return "<dt>" + x[0] + "</dt><dd>" + esc(x[1]) + "</dd>"; }).join("") + "</dl>";
+      var shipTxt = o.shipMode === "fixed" ? (o.shipCost ? money(o.shipCost) + T : "رایگان") : o.shipMode === "cod" ? "پس‌کرایه" : o.ship ? "در پیش‌فاکتور" : "";
+      var addr = [o.city, o.address, o.postcode ? "کد پستی " + fa(o.postcode) : ""].filter(Boolean).join("، ");
+      slot.innerHTML = '<a class="back-link" href="#orders">' + icon("arrow") + "سفارش‌های من</a>" +
+        '<div class="o-head"><div><h2>سفارش <span dir="ltr">' + fa(o.id) + "</span></h2><small>ثبت در " + faDate(o.at, true) + "</small></div>" + stHtml(o.status) + "</div>" + steps +
+        (o.message ? '<div class="msg-box">' + icon("bell") + "<div><b>پیام کارگاه</b><p>" + esc(o.message) + "</p></div></div>" : "") +
+        '<div class="o-grid"><section class="co-card"><h3>' + ((o.items || []).length ? "کالاها" : "مشخصات سفارش") + "</h3>" + items + "</section>" +
+        '<aside class="o-side"><section class="co-card"><h3>مبلغ</h3>' +
+        (o.sub ? row("قیمت کالاها", money(o.sub) + T) : "") +
+        (o.off ? row('کد تخفیف <b dir="ltr">' + esc(o.coupon || "") + "</b>", "−" + money(o.off) + T, "good") : "") +
+        (o.ship ? row("ارسال", esc(shipTxt), "muted") : "") +
+        (o.ask ? row("اقلام استعلامی", fa(o.ask) + " قلم", "muted") : "") +
+        '<p class="sum-row sum-total"><span>جمع</span><b>' + (o.total ? money(o.total) + T : "در پیش‌فاکتور") + "</b></p></section>" +
+        (o.ship || addr ? '<section class="co-card"><h3>تحویل</h3>' + (o.ship ? "<p><b>" + esc(o.ship) + "</b></p>" : "") +
+          "<p>" + esc(o.name || "") + ' · <span dir="ltr">' + esc(fa(o.phone || "")) + "</span></p>" + (addr ? "<p>" + esc(addr) + "</p>" : "") + "</section>" : "") +
+        '<div class="o-acts">' + ((o.items || []).some(function (x) { return BY[x.id]; }) ? '<button type="button" class="btn btn-block" data-reorder="' + esc(o.id) + '">' + icon("cart") + "خرید دوباره</button>" : "") +
+        (o.status === "new" ? '<button type="button" class="btn btn-ghost btn-block danger" data-cancel="' + esc(o.id) + '">لغو سفارش</button>' : "") +
+        '<p class="form-msg" role="status"></p></div></aside></div>';
+      accOrder.last = o;
+    });
+  }
+  function accProfile(slot, me) {
+    slot.innerHTML = '<h2 class="acc-h">مشخصات و نشانی</h2><form id="acc-edit" class="form" novalidate><div class="fgrid">' +
+      '<label class="f"><span>نام</span><input name="name" maxlength="60" value="' + esc(me.name) + '"></label>' +
+      '<label class="f"><span>شرکت یا کارگاه</span><input name="company" maxlength="80" value="' + esc(me.company) + '"></label>' +
+      '<label class="f"><span>شهر</span><input name="city" maxlength="40" value="' + esc(me.city) + '"></label>' +
+      '<label class="f"><span>کد پستی</span><input name="postcode" dir="ltr" maxlength="12" value="' + esc(me.postcode) + '"></label>' +
+      '<label class="f f-wide"><span>نشانی</span><textarea name="address" rows="2" maxlength="300">' + esc(me.address) + "</textarea></label>" +
+      '<label class="f"><span>رمز فعلی (برای تغییر رمز)</span><input name="old" type="password" autocomplete="current-password"></label>' +
+      '<label class="f"><span>رمز تازه</span><input name="new" type="password" autocomplete="new-password"></label></div>' +
+      '<p class="form-msg" role="status"></p><button class="btn" type="submit">ذخیره</button></form>';
+  }
   function account() {
     var slot = document.querySelector('[data-slot="account"]');
-    var names = (C.track && C.track.statuses) || {};
     api("GET", "account/me").then(function (me) {
       if (me._status !== 200) {
+        ME = null;
         slot.innerHTML = '<div class="acc-auth form"><div class="tabs" role="tablist"><button type="button" role="tab" data-tab="in" aria-selected="true">ورود</button>' +
           '<button type="button" role="tab" data-tab="up" aria-selected="false">ساخت حساب</button></div>' +
           '<form id="acc-login" data-pane="in" novalidate><div class="fgrid one"><label class="f"><span>موبایل</span><input name="phone" required inputmode="tel" dir="ltr" maxlength="14" autocomplete="tel"></label>' +
@@ -626,31 +886,48 @@
           '<label class="f"><span>موبایل</span><input name="phone" required inputmode="tel" dir="ltr" maxlength="14" autocomplete="tel"></label>' +
           '<label class="f"><span>رمز (دست‌کم ۸ نویسه)</span><input name="pass" type="password" required minlength="8" autocomplete="new-password"></label></div>' +
           '<p class="form-msg" role="status"></p><button class="btn btn-block" type="submit">ساخت حساب</button></form>' +
-          '<p class="note">بدون حساب هم می‌شود خرید کرد؛ با حساب، سفارش‌ها و نشانی شما یک‌جا می‌ماند.</p></div>';
+          '<p class="note">بدون حساب هم می‌شود خرید کرد؛ با حساب، سفارش‌ها و نشانی شما یک‌جا می‌ماند و روند هر سفارش را همین‌جا می‌بینید.</p></div>';
         return;
       }
-      var orders = (me.orders || []).map(function (o) {
-        return '<li class="acc-order"><div><b>سفارش <span dir="ltr">' + fa(o.id) + "</span></b><small>" + new Date(o.at).toLocaleDateString("fa-IR") + "</small></div>" +
-          "<p>" + esc(o.tool) + "</p><span class=\"st st-" + esc(o.status) + "\">" + esc(names[o.status] || o.status) + "</span>" +
-          (o.total ? "<b>" + money(o.total) + " تومان</b>" : "<span></span>") + (o.public ? '<p class="msg-box">' + esc(o.public) + "</p>" : "") + "</li>";
+      ME = me;
+      var h = location.hash.slice(1) || "dashboard", sec = /^order-/.test(h) ? "orders" : /^orders/.test(h) ? "orders" : h;
+      var open = (me.orders || []).filter(function (o) { return OPEN.indexOf(o.status) >= 0; }).length;
+      var nav = [["dashboard", "پیشخوان", "grid"], ["orders", "سفارش‌ها", "box"], ["profile", "مشخصات و نشانی", "user"]].map(function (x) {
+        return '<a href="#' + x[0] + '"' + (sec === x[0] ? ' aria-current="page"' : "") + ">" + icon(x[2]) + x[1] +
+          (x[0] === "orders" && open ? '<i class="nbadge">' + fa(open) + "</i>" : "") + "</a>";
       }).join("");
-      slot.innerHTML = '<div class="acc-grid"><aside class="acc-side form"><div class="acc-me">' + icon("user") + "<div><b>" + esc(me.name) + '</b><small dir="ltr">' + esc(fa(me.phone)) + "</small></div></div>" +
-        '<nav class="acc-nav" role="tablist"><button type="button" role="tab" data-tab="orders" aria-selected="true">سفارش‌ها</button>' +
-        '<button type="button" role="tab" data-tab="profile" aria-selected="false">مشخصات و نشانی</button>' +
-        '<a href="/micron-demo/wishlist/">علاقه‌مندی‌ها</a><button type="button" data-logout>خروج</button></nav></aside>' +
-        '<div><section data-pane="orders">' + (orders ? '<ul class="acc-orders">' + orders + "</ul>" :
-          '<div class="empty">' + icon("cart") + '<p>هنوز سفارشی با این حساب ثبت نشده.</p><a class="btn" href="/micron-demo/shop/">رفتن به فروشگاه</a></div>') + "</section>" +
-        '<form id="acc-edit" class="form" data-pane="profile" hidden novalidate><div class="fgrid">' +
-        '<label class="f"><span>نام</span><input name="name" maxlength="60" value="' + esc(me.name) + '"></label>' +
-        '<label class="f"><span>شرکت یا کارگاه</span><input name="company" maxlength="80" value="' + esc(me.company) + '"></label>' +
-        '<label class="f"><span>شهر</span><input name="city" maxlength="40" value="' + esc(me.city) + '"></label>' +
-        '<label class="f"><span>کد پستی</span><input name="postcode" dir="ltr" maxlength="12" value="' + esc(me.postcode) + '"></label>' +
-        '<label class="f f-wide"><span>نشانی</span><textarea name="address" rows="2" maxlength="300">' + esc(me.address) + "</textarea></label>" +
-        '<label class="f"><span>رمز فعلی (برای تغییر رمز)</span><input name="old" type="password" autocomplete="current-password"></label>' +
-        '<label class="f"><span>رمز تازه</span><input name="new" type="password" autocomplete="new-password"></label></div>' +
-        '<p class="form-msg" role="status"></p><button class="btn" type="submit">ذخیره</button></form></div></div>';
+      slot.innerHTML = '<div class="acc-grid"><aside class="acc-side"><div class="acc-me">' + icon("user") + "<div><b>" + esc(me.name) + '</b><small dir="ltr">' + esc(fa(me.phone)) + "</small></div></div>" +
+        '<nav class="acc-nav" aria-label="حساب کاربری">' + nav + '<a href="/micron-demo/wishlist/">' + icon("heart") + "علاقه‌مندی‌ها</a>" +
+        '<button type="button" data-logout>' + icon("x") + "خروج</button></nav></aside><div class=\"acc-main\" data-accmain></div></div>";
+      var main = slot.querySelector("[data-accmain]");
+      if (/^order-/.test(h)) accOrder(main, h.slice(6));
+      else if (/^orders/.test(h)) accOrders(main, me, h.slice(7));
+      else if (h === "profile") accProfile(main, me);
+      else accDash(main, me);
     });
   }
+  document.addEventListener("click", function (e) {
+    var t;
+    if ((t = e.target.closest("[data-reorder]"))) {
+      var o = accOrder.last; if (!o) return;
+      var cart = store("cart"), n = 0;
+      (o.items || []).forEach(function (x) {
+        if (!BY[x.id] || BY[x.id].avail === "out") return;
+        var line = cart.filter(function (c) { return c.id === x.id; })[0]; n++;
+        if (line) line.qty = Math.min(1000, line.qty + x.qty); else cart.push({ id: x.id, qty: x.qty });
+      });
+      store("cart", cart);
+      if (n) location.href = "/micron-demo/cart/"; else toast("کالاهای این سفارش الان در فروشگاه موجود نیستند.");
+    } else if ((t = e.target.closest("[data-cancel]"))) {
+      if (!confirm("این سفارش لغو شود؟")) return;
+      var msg = t.parentNode.querySelector(".form-msg"); t.disabled = true;
+      api("POST", "account/orders/" + encodeURIComponent(t.getAttribute("data-cancel")) + "/cancel", {}).then(function (j) {
+        t.disabled = false;
+        if (j._status !== 200) { msg.textContent = errText(j); return; }
+        toast("سفارش لغو شد."); draw();
+      }, function () { t.disabled = false; msg.textContent = "ارتباط برقرار نشد."; });
+    }
+  });
 
   // ---------------------------------------------------------------- 3D tilt on cards and figures
   var fine = matchMedia("(hover: hover) and (pointer: fine)").matches && !matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -666,6 +943,42 @@
     }, { passive: true });
   }
 
+  // ---------------------------------------------------------------- horizontal rows (categories): arrows + mouse drag
+  // Touch scrolls them natively; a mouse has no horizontal wheel and the scrollbar is hidden, so they get arrows.
+  function railUpd(r) {
+    var box = r.parentNode, x = Math.abs(r.scrollLeft), over = r.scrollWidth - r.clientWidth > 2;
+    box.querySelector(".rail-arr.prev").hidden = !over || x < 2;
+    box.querySelector(".rail-arr.next").hidden = !over || x + r.clientWidth >= r.scrollWidth - 2;
+  }
+  function rails() {
+    document.querySelectorAll(".shop-rail, .cat-rail").forEach(function (r) {
+      if (!r.parentNode.classList.contains("rail-box")) {
+        var box = document.createElement("div"); box.className = "rail-box";
+        r.parentNode.insertBefore(box, r); box.appendChild(r);
+        box.insertAdjacentHTML("beforeend", '<button type="button" class="rail-arr prev" data-rail-go="-1" aria-label="قبلی" tabindex="-1" hidden>' + icon("arrow") +
+          '</button><button type="button" class="rail-arr next" data-rail-go="1" aria-label="بعدی" tabindex="-1" hidden>' + icon("arrow") + "</button>");
+        r.addEventListener("scroll", function () { railUpd(r); }, { passive: true });
+        addEventListener("resize", function () { railUpd(r); });
+        var x0 = null, s0 = 0, moved = false;
+        r.addEventListener("pointerdown", function (e) { if (e.pointerType !== "mouse" || e.button) return; x0 = e.clientX; s0 = r.scrollLeft; moved = false; });
+        addEventListener("pointermove", function (e) {
+          if (x0 === null) return;
+          if (Math.abs(e.clientX - x0) > 6) { moved = true; r.classList.add("dragging"); }
+          if (moved) r.scrollLeft = s0 - (e.clientX - x0);
+        });
+        addEventListener("pointerup", function () { x0 = null; setTimeout(function () { r.classList.remove("dragging"); }, 0); });
+        r.addEventListener("click", function (e) { if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; } }, true);
+        r.addEventListener("dragstart", function (e) { e.preventDefault(); });
+      }
+      railUpd(r);
+    });
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-rail-go]"); if (!b) return;
+    var r = b.parentNode.querySelector(".shop-rail, .cat-rail");
+    r.scrollBy({ left: -Number(b.getAttribute("data-rail-go")) * r.clientWidth * 0.8, behavior: "smooth" });  // RTL: forward is to the left
+  });
+
   // ---------------------------------------------------------------- start
   function draw() {
     if (page === "home") home();
@@ -676,6 +989,7 @@
     else if (page === "wishlist") wishlist();
     else if (page === "account") account();
     counts();
+    rails();
   }
   if (page === "shop") readUrl();
   draw();

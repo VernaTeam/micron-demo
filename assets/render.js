@@ -57,7 +57,12 @@
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
     chev: '<path d="M6 9l6 6 6-6"/>',
     sort: '<path d="M4 7h12M4 12h8M4 17h4M18 5v14M15 16l3 3 3-3"/>',
-    filter: '<path d="M4 6h16M7 12h10M10 18h4"/>'
+    filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+    tag: '<path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7l8.3 8.3a1.5 1.5 0 0 1 0 2.1l-6.1 6.1a1.5 1.5 0 0 1-2.1 0z"/><circle cx="8" cy="8" r="1.4"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    box: '<path d="M3.5 7.5L12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5L12 12l8.5-4.5M12 12v9"/>',
+    wallet: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M15.5 13.5h2"/>',
+    bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'
   };
   var icon = function (n) {
     return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + ICON[n] + "</svg>";
@@ -195,8 +200,8 @@
     latest: function (c) {
       var s = c.latest;
       return '<section id="latest" class="sec" aria-labelledby="latest-t" data-needs="latest" hidden><div class="wrap">' +
-        '<div class="row-head">' + head(s, "latest") + '<a class="more-link" href="/micron-demo/shop/">همه‌ی محصولات' + icon("arrow") + "</a></div></div>" +
-        '<div class="marquee" data-marquee><div class="mq-track" data-slot="latest"></div></div></section>';
+        '<div class="row-head">' + head(s, "latest") + '<a class="more-link" href="/micron-demo/shop/">همه‌ی محصولات' + icon("arrow") + "</a></div>" +
+        '<div class="marquee" data-marquee><div class="mq-track" data-slot="latest"></div></div></div></section>';
     },
     picks: function (c) {
       var s = c.picks || {};
@@ -341,7 +346,7 @@
       '<div class="shop-grid"><aside class="filters" id="filters" aria-label="فیلترها"></aside><div class="shop-main">' +
       '<div class="shop-bar"><button class="btn btn-ghost btn-sm filter-btn" type="button" data-filters>' + icon("filter") + 'فیلترها<span class="fdot" data-fcount hidden></span></button>' +
       '<div class="sort-tabs" role="group" aria-label="مرتب‌سازی">' + icon("sort") + '<span class="st-label">مرتب‌سازی:</span>' +
-      [["new", "جدیدترین"], ["cheap", "ارزان‌ترین"], ["dear", "گران‌ترین"], ["off", "بیشترین تخفیف"]].map(function (x) {
+      [["new", "جدیدترین"], ["cheap", "ارزان‌ترین"], ["dear", "گران‌ترین"], ["off", "بیشترین تخفیف"], ["sold", "پرفروش‌ترین"]].map(function (x) {
         return '<button type="button" data-sortv="' + x[0] + '" aria-pressed="false">' + x[1] + "</button>";
       }).join("") + '</div><p class="shop-count" role="status"></p></div>' +
       '<div class="chips" data-chips hidden></div><div class="pgrid" data-slot="shop"></div></div></div>' :
