@@ -70,7 +70,7 @@
   var img = function (src, alt, cls, eager) {
     src = url(src);
     if (!src) return "";
-    if (/^(img|uploads)\//.test(src)) src = "/micron-demo/" + src;  // absolute: the same HTML serves /, /en/ and /track/
+    if (/^(img|uploads)\//.test(src)) src = "/micron-demo/" + src;  // absolute: the same HTML serves /, /micron-demo/en/ and /track/
     var small = /^\/img\/.+\.webp$/.test(src) ? src.replace(/\.webp$/, "-s.webp") : "";
     return '<img class="' + (cls || "") + '" src="' + esc(small || src) + '"' +
       (small ? ' srcset="' + esc(small) + " 720w, " + esc(src) + ' 1376w" sizes="(max-width: 760px) 100vw, 50vw"' : "") +
